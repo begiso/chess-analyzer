@@ -723,7 +723,7 @@ function showError(msg) {
   el.classList.toggle('hidden', !msg);
 }
 
-async function run(e) {
+async function run(e, { latest = false } = {}) {
   e.preventDefault();
   showError('');
   const username = $('#username').value.trim();
@@ -731,12 +731,14 @@ async function run(e) {
   savePrefs();
 
   let games;
-  $('#go').disabled = true;
+  $('#go').disabled = $('#go-last').disabled = true;
   stopRequested = false;
   try {
     if (mode_ === 'chesscom') {
       if (!username) throw new Error('Введите ник на chess.com.');
-      games = await fetchChessCom(username, +$('#count').value, $('#timeclass').value, s => setProgress(s, 0));
+      games = latest
+        ? await fetchChessCom(username, 1, 'all', s => setProgress(s, 0))
+        : await fetchChessCom(username, +$('#count').value, $('#timeclass').value, s => setProgress(s, 0));
       if (!games.length) throw new Error('Не нашлось партий с такими настройками. Попробуйте другой контроль времени.');
     } else {
       const chunks = splitPgn($('#pgn').value);
@@ -761,12 +763,13 @@ async function run(e) {
     if (!analyzed.length) throw new Error('Анализ остановлен до завершения первой партии.');
     setProgress(stopRequested ? `Остановлено: разобрано ${analyzed.length} из ${games.length}` : `Готово: разобрано ${analyzed.length} ${plural(analyzed.length, 'партия', 'партии', 'партий')}`, 1);
     renderReport(analyzed, username);
-    $('#report').scrollIntoView({ behavior: 'smooth' });
+    if (latest) openViewer(analyzed[0]);
+    else $('#report').scrollIntoView({ behavior: 'smooth' });
   } catch (err) {
     showError(err.message || String(err));
     $('#progress').classList.add('hidden');
   } finally {
-    $('#go').disabled = false;
+    $('#go').disabled = $('#go-last').disabled = false;
   }
 }
 
@@ -796,6 +799,7 @@ function setMode(m) {
 }
 
 $('#form').addEventListener('submit', run);
+$('#go-last').addEventListener('click', e => run(e, { latest: true }));
 $('#stop').addEventListener('click', () => { stopRequested = true; });
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setMode(t.dataset.tab)));
 $('#back').addEventListener('click', closeViewer);
