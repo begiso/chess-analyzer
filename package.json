@@ -1,0 +1,16 @@
+{
+  "name": "chess-analyzer",
+  "version": "1.0.0",
+  "description": "Анализатор партий chess.com: Stockfish в браузере находит ваши типичные ошибки",
+  "scripts": {
+    "start": "node serve.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "GPL-3.0",
+  "type": "commonjs",
+  "dependencies": {
+    "chess.js": "^1.4.0",
+    "stockfish": "^10.0.2"
+  }
+}
