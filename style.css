@@ -171,3 +171,13 @@ td.name { white-space: normal; min-width: 180px; }
 .moves .mv.cur .mark { color: inherit; }
 
 .foot { color: var(--muted); font-size: 12px; padding-top: 8px; padding-bottom: 32px; }
+
+/* variations */
+.why { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.line { display: flex; flex-wrap: wrap; gap: 4px; margin: 10px 0; }
+.chip { font: inherit; font-size: 13px; font-variant-numeric: tabular-nums; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 7px; padding: 2px 8px; }
+.chip .n { color: var(--muted); margin-right: 3px; }
+.chip.cur { background: #3b7dd8; border-color: #3b7dd8; color: #fff; }
+.chip.cur .n { color: #dbe8fb; }
+.line-nav { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.line-nav .link { margin-left: auto; }

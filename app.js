@@ -31,7 +31,8 @@ class Engine {
       const h = line => {
         if (line.startsWith('info') && line.includes(' score ') && !/bound/.test(line)) {
           const m = line.match(/score (cp|mate) (-?\d+)/);
-          if (m) last = m[1] === 'cp' ? { cp: +m[2], mate: null } : { cp: null, mate: +m[2] };
+          const pv = (line.split(' pv ')[1] || '').trim().split(/\s+/).filter(Boolean);
+          if (m) last = m[1] === 'cp' ? { cp: +m[2], mate: null, pv } : { cp: null, mate: +m[2], pv };
         } else if (line.startsWith('bestmove')) {
           this.listeners = this.listeners.filter(x => x !== h);
           const best = line.split(' ')[1];
@@ -551,7 +552,7 @@ function bars(rows) {
 /* ================= Rendering: game viewer ================= */
 
 const GLYPH = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟︎' };
-const view = { game: null, ply: 0 };
+const view = { game: null, ply: 0, line: null };
 
 function openViewer(game) {
   view.game = game;
@@ -575,6 +576,7 @@ function openViewer(game) {
 }
 
 function closeViewer() {
+  exitLine(false);
   $('#viewer').classList.add('hidden');
   $('#report').classList.remove('hidden');
   $('#form-card').classList.remove('hidden');
@@ -596,10 +598,15 @@ function renderMoves() {
 
 function goto(ply) {
   const g = view.game;
+  exitLine(false);
   view.ply = Math.max(0, Math.min(g.moves.length, ply));
   const m = view.ply ? g.moves[view.ply - 1] : null;
   const fen = m ? m.after : g.moves[0].before;
-  renderBoard(fen, m);
+  // Arrows: green = best move instead of the played one, red = the opponent's refutation.
+  const arrows = [];
+  if (m && m.cls && !m.isBest && m.bestEval.best) arrows.push([m.bestEval.best, GREEN]);
+  if (m && (m.cls === 'blunder' || m.cls === 'mistake') && m.replyUci) arrows.push([m.replyUci, RED]);
+  renderBoard(fen, m, m?.cls, arrows);
   renderEval(g.evals[view.ply]);
   renderComment(m);
   $('#moves').querySelectorAll('.mv.cur').forEach(el => el.classList.remove('cur'));
@@ -607,7 +614,10 @@ function goto(ply) {
   if (cur) { cur.classList.add('cur'); cur.scrollIntoView({ block: 'nearest' }); }
 }
 
-function renderBoard(fen, m) {
+const GREEN = '#3d9a3d', RED = '#d64545', BLUE = '#3b7dd8';
+
+// hl: move whose squares get highlighted; badge: classification shown on hl.to.
+function renderBoard(fen, hl, badge, arrows = []) {
   const flip = view.game.userColor === 'b';
   const board = new Chess(fen).board();
   const files = 'abcdefgh';
@@ -618,21 +628,17 @@ function renderBoard(fen, m) {
       const sq = files[ff] + (8 - rr);
       const p = board[rr][ff];
       const light = (rr + ff) % 2 === 0;
-      const hl = m && (sq === m.from || sq === m.to) ? ' hl' : '';
+      const lit = hl && (sq === hl.from || sq === hl.to) ? ' hl' : '';
       let inner = p ? `<span class="pc ${p.color}">${GLYPH[p.type]}</span>` : '';
       if (r === 7) inner += `<span class="coord f">${files[ff]}</span>`;
       if (f === 0) inner += `<span class="coord r">${8 - rr}</span>`;
-      if (m && sq === m.to && m.cls) inner += `<span class="badge" style="background:${CLS[m.cls].color}">${CLS[m.cls].mark}</span>`;
-      html += `<div class="sq ${light ? 'l' : 'd'}${hl}">${inner}</div>`;
+      if (hl && sq === hl.to && badge) inner += `<span class="badge" style="background:${CLS[badge].color}">${CLS[badge].mark}</span>`;
+      html += `<div class="sq ${light ? 'l' : 'd'}${lit}">${inner}</div>`;
     }
   }
   $('#board').innerHTML = html;
 
-  // Arrows: green = best move instead of the played one, red = the opponent's refutation.
-  const arrows = [];
-  if (m && m.cls && !m.isBest && m.bestEval.best) arrows.push([m.bestEval.best, '#3d9a3d']);
-  if (m && (m.cls === 'blunder' || m.cls === 'mistake') && m.replyUci) arrows.push([m.replyUci, '#d64545']);
-  $('#arrows').innerHTML = `<defs>${['#3d9a3d', '#d64545'].map(c =>
+  $('#arrows').innerHTML = `<defs>${[GREEN, RED, BLUE].map(c =>
     `<marker id="ah${c.slice(1)}" markerWidth="4" markerHeight="4" refX="2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 z" fill="${c}"/></marker>`).join('')}</defs>`
     + arrows.map(([uci, c]) => arrowSvg(uci, c, flip)).join('');
 }
@@ -693,8 +699,206 @@ function renderComment(m) {
   const c = CLS[m.cls];
   let body = '';
   if (m.type) body += `<p><b>${esc(TYPES[m.type].label)}.</b> ${TYPE_TEXT[m.type](m)}</p>`;
-  if (m.bestSan && !m.isBest) body += `<p>Лучше было: <b style="color:#3d9a3d">${esc(m.bestSan)}</b> (зелёная стрелка)${m.type && m.replySan && m.type !== 'missedTactic' && m.type !== 'missedMate' ? ', угроза соперника показана красной' : ''}.</p>`;
-  el.innerHTML = `<h3>${num} <span class="tag" style="background:${c.color}">${c.label}</span></h3><p class="muted">${who}</p>${body}${evalLine}`;
+  if (m.bestSan && !m.isBest) body += `<p>Лучше было: <b style="color:${GREEN}">${esc(m.bestSan)}</b> (зелёная стрелка)${m.type && m.replySan && m.type !== 'missedTactic' && m.type !== 'missedMate' ? ', угроза соперника показана красной' : ''}.</p>`;
+
+  // Missed-opportunity errors are best explained by the better line; the rest by the refutation.
+  const bestFirst = m.type === 'missedTactic' || m.type === 'missedMate';
+  const refuteBtn = `<button class="btn ${bestFirst ? '' : 'primary'}" data-line="refute">${mine ? 'Почему это ошибка?' : 'Как можно было наказать?'}</button>`;
+  const bestBtn = m.bestSan && !m.isBest ? `<button class="btn ${bestFirst ? 'primary' : ''}" data-line="best">Как было лучше</button>` : '';
+  const buttons = `<div class="why">${bestFirst ? bestBtn + refuteBtn : refuteBtn + bestBtn}</div>`;
+
+  el.innerHTML = `<h3>${num} <span class="tag" style="background:${c.color}">${c.label}</span></h3><p class="muted">${who}</p>${body}${evalLine}${buttons}`;
+  el.querySelectorAll('[data-line]').forEach(b => b.addEventListener('click', () => showLine(b.dataset.line)));
+}
+
+/* ================= Variations: why a move was a mistake ================= */
+
+const LINE_PLIES = 8, LINE_MAX_PLIES = 12, LINE_MIN_DEPTH = 14;
+const lineCache = new Map();
+let lineToken = 0, lineTimer = null;
+
+function materialBalance(fen, color) {
+  let bal = 0;
+  for (const ch of fen.split(' ')[0]) {
+    const t = ch.toLowerCase();
+    if (!VALUE[t]) continue;
+    bal += (ch === t ? 'b' : 'w') === color ? VALUE[t] : -VALUE[t];
+  }
+  return bal;
+}
+
+function countPieces(fen, color) {
+  const c = { q: 0, r: 0, b: 0, n: 0, p: 0 };
+  for (const ch of fen.split(' ')[0]) {
+    const t = ch.toLowerCase();
+    if (t in c && (ch === t ? 'b' : 'w') === color) c[t]++;
+  }
+  return c;
+}
+
+// "ферзя", "две пешки", "ладью и коня" — accusative, as in "вы теряете …".
+function piecesWords(diff) {
+  const one = { q: 'ферзя', r: 'ладью', b: 'слона', n: 'коня', p: 'пешку' };
+  const two = { q: 'двух ферзей', r: 'две ладьи', b: 'двух слонов', n: 'двух коней', p: 'две пешки' };
+  const parts = Object.entries(diff).filter(([, n]) => n > 0)
+    .map(([t, n]) => n === 1 ? one[t] : n === 2 ? two[t] : `${n} ${t === 'p' ? plural(n, 'пешку', 'пешки', 'пешек') : '× ' + one[t]}`);
+  return parts.length > 1 ? parts.slice(0, -1).join(', ') + ' и ' + parts[parts.length - 1] : parts[0] || '';
+}
+
+// Describes the material swing for `color` between two positions, e.g. "теряете ферзя, а получаете только пешку (итого −8)".
+function tradeWords(fromFen, toFen, color, a) {
+  const opp = color === 'w' ? 'b' : 'w';
+  const ownB = countPieces(fromFen, color), ownA = countPieces(toFen, color);
+  const oppB = countPieces(fromFen, opp), oppA = countPieces(toFen, opp);
+  const lost = {}, won = {};
+  for (const t of Object.keys(ownB)) { lost[t] = ownB[t] - ownA[t]; won[t] = oppB[t] - oppA[t]; }
+  const lostW = piecesWords(lost), wonW = piecesWords(won);
+  const delta = materialBalance(toFen, color) - materialBalance(fromFen, color);
+  const total = `(итого ${delta > 0 ? '+' : '−'}${Math.abs(delta)})`;
+  if (delta < 0) return wonW ? `${a.lose} ${lostW}, а получаете взамен только ${wonW} ${total}`.replace('получаете', a.who === 'вы' ? 'получаете' : 'получает')
+                             : `${a.lose} ${lostW} ${total}`;
+  return lostW ? `${a.win} ${wonW} за ${lostW} ${total}` : `${a.win} ${wonW} ${total}`;
+}
+
+// Engine principal variation from a position, extended so it doesn't stop in the middle of an exchange.
+async function computeLine(startFen, depth) {
+  const key = startFen + '|' + depth;
+  if (lineCache.has(key)) return lineCache.get(key);
+  engine ||= new Engine();
+  const c = new Chess(startFen);
+  const res = await engine.analyse(startFen, depth);
+  const ev = toWhite(res, c.turn());
+  const moves = [];
+  for (const uci of res.pv || []) {
+    if (moves.length >= LINE_MAX_PLIES) break;
+    if (moves.length >= LINE_PLIES && !moves[moves.length - 1].captured) break;
+    const number = c.moveNumber();
+    let mv;
+    try { mv = c.move(uciToMove(uci)); } catch { break; }
+    moves.push({ san: mv.san, from: mv.from, to: mv.to, uci, after: mv.after, color: mv.color, captured: mv.captured, number });
+  }
+  const line = { startFen, eval: ev, moves };
+  lineCache.set(key, line);
+  return line;
+}
+
+function actor(color) {
+  return color === view.game.userColor
+    ? { who: 'вы', lose: 'теряете', win: 'выигрываете', mate: 'ставите мат' }
+    : { who: 'соперник', lose: 'теряет', win: 'выигрывает', mate: 'ставит мат' };
+}
+const cap = s => s[0].toUpperCase() + s.slice(1);
+
+function evalWords(e) {
+  if (e.mate != null) return `мат в ${Math.abs(e.mate)} в пользу ${e.mate > 0 ? 'белых' : 'чёрных'}`;
+  if (Math.abs(e.cp) < 50) return `позиция примерно равная (${fmtEval(e)})`;
+  return `${fmtEval(e)} в пользу ${e.cp > 0 ? 'белых' : 'чёрных'}`;
+}
+
+function lineSummary(kind, m, line) {
+  const endFen = line.moves.length ? line.moves[line.moves.length - 1].after : line.startFen;
+  const end = new Chess(endFen);
+  const mover = m.color, opp = mover === 'w' ? 'b' : 'w';
+  // Baseline is the position before the move, so a capture made by the move itself is counted.
+  const delta = materialBalance(endFen, mover) - materialBalance(m.before, mover);
+  const fullMoves = Math.ceil(line.moves.length / 2);
+  const inMoves = `за ${fullMoves} ${plural(fullMoves, 'ход', 'хода', 'ходов')}`;
+
+  if (kind === 'refute') {
+    if (end.isCheckmate() && end.turn() === mover) return `${cap(actor(opp).who)} ${actor(opp).mate} ${inMoves}.`;
+    if (delta <= -1) return `В этом варианте ${actor(mover).who} ${tradeWords(m.before, endFen, mover, actor(mover))}.`;
+    // The line is searched deeper than the initial pass; if it disagrees, say so instead of inventing a reason.
+    const deepWin = mover === 'w' ? winPct(line.eval) : 100 - winPct(line.eval);
+    if (m.winBefore - deepWin < 5) return `При более глубоком анализе ход выглядит нормально (оценка: ${evalWords(line.eval)}). Быстрая проверка переоценила ошибку.`;
+    return `Материал сразу не теряется, но позиция ухудшается: шансы ${Math.round(m.winBefore)}% → ${Math.round(deepWin)}% (оценка: ${evalWords(line.eval)}).`;
+  }
+  if (end.isCheckmate() && end.turn() === opp) return `${cap(actor(mover).who)} ${actor(mover).mate} ${inMoves}.`;
+  if (delta >= 1) return `В этом варианте ${actor(mover).who} ${tradeWords(m.before, endFen, mover, actor(mover))}.`;
+  return `Материал сохраняется, а оценка — ${evalWords(line.eval)}. Это заметно лучше, чем после сыгранного хода.`;
+}
+
+async function showLine(kind) {
+  const g = view.game, m = g.moves[view.ply - 1];
+  if (!m) return;
+  const token = ++lineToken;
+  stopAutoplay();
+  $('#comment').querySelectorAll('[data-line]').forEach(b => { b.disabled = true; });
+  $('#comment').insertAdjacentHTML('beforeend', '<p class="muted" id="line-loading">Считаю вариант движком…</p>');
+
+  const depth = Math.max(+$('#depth').value || 12, LINE_MIN_DEPTH);
+  const line = await computeLine(kind === 'refute' ? m.after : m.before, depth);
+  if (token !== lineToken || view.game !== g) return;
+
+  view.line = { kind, move: m, ...line, idx: 0, summary: lineSummary(kind, m, line) };
+  renderLine();
+  startAutoplay();
+}
+
+function renderLine() {
+  const L = view.line, m = L.move;
+  const cur = L.idx ? L.moves[L.idx - 1] : null;
+  const fen = cur ? cur.after : L.startFen;
+  const next = L.moves[L.idx];
+  // Before the first step of a refutation, keep the mistake itself highlighted.
+  const hl = cur || (L.kind === 'refute' ? m : null);
+  renderBoard(fen, hl, !cur && L.kind === 'refute' ? m.cls : null, next ? [[next.uci, BLUE]] : []);
+  renderEval(L.eval);
+
+  const mine = m.color === view.game.userColor;
+  const title = L.kind === 'best' ? 'Как было лучше' : mine ? 'Почему это ошибка' : 'Как можно было наказать';
+  const chips = L.moves.map((mv, i) => {
+    const n = mv.color === 'w' ? `${mv.number}.` : i === 0 ? `${mv.number}…` : '';
+    return `<button class="chip ${i + 1 === L.idx ? 'cur' : ''}" data-step="${i + 1}"><span class="n">${n}</span>${esc(mv.san)}</button>`;
+  }).join('');
+  const playing = lineTimer != null;
+
+  $('#comment').innerHTML = `
+    <h3>${title}</h3>
+    <p>${esc(L.summary)}</p>
+    <div class="line">${chips || '<span class="muted">Движок не нашёл продолжения.</span>'}</div>
+    <div class="line-nav">
+      <button class="btn" data-lnav="prev" title="Назад (←)">◀</button>
+      <button class="btn" data-lnav="play">${playing ? '⏸ Пауза' : '▶ Проиграть'}</button>
+      <button class="btn" data-lnav="next" title="Вперёд (→)">▶</button>
+      <button class="link" data-lnav="exit">Вернуться к партии (Esc)</button>
+    </div>
+    <p class="muted">Синяя стрелка — следующий ход варианта.</p>`;
+  $('#comment').querySelectorAll('[data-step]').forEach(b => b.addEventListener('click', () => { stopAutoplay(); lineStep(+b.dataset.step, true); }));
+  $('#comment').querySelectorAll('[data-lnav]').forEach(b => b.addEventListener('click', () => {
+    const a = b.dataset.lnav;
+    if (a === 'exit') return exitLine(true);
+    if (a === 'play') return lineTimer ? (stopAutoplay(), renderLine()) : (view.line.idx >= view.line.moves.length && (view.line.idx = 0), startAutoplay(), renderLine());
+    stopAutoplay();
+    lineStep(a === 'prev' ? -1 : 1);
+  }));
+}
+
+function lineStep(n, absolute = false) {
+  const L = view.line;
+  L.idx = Math.max(0, Math.min(L.moves.length, absolute ? n : L.idx + n));
+  renderLine();
+}
+
+function startAutoplay() {
+  stopAutoplay();
+  lineTimer = setInterval(() => {
+    const L = view.line;
+    if (!L || L.idx >= L.moves.length) { stopAutoplay(); if (L) renderLine(); return; }
+    lineStep(1);
+  }, 1000);
+}
+
+function stopAutoplay() {
+  if (lineTimer) clearInterval(lineTimer);
+  lineTimer = null;
+}
+
+function exitLine(rerender) {
+  lineToken++;
+  stopAutoplay();
+  if (!view.line) return;
+  view.line = null;
+  if (rerender) goto(view.ply);
 }
 
 function nextMistake() {
@@ -805,6 +1009,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 $('#back').addEventListener('click', closeViewer);
 document.querySelectorAll('[data-nav]').forEach(b => b.addEventListener('click', () => {
   const a = b.dataset.nav;
+  if (view.line && (a === 'prev' || a === 'next')) { stopAutoplay(); return lineStep(a === 'prev' ? -1 : 1); }
   if (a === 'start') goto(0);
   if (a === 'prev') goto(view.ply - 1);
   if (a === 'next') goto(view.ply + 1);
@@ -813,6 +1018,11 @@ document.querySelectorAll('[data-nav]').forEach(b => b.addEventListener('click',
 }));
 document.addEventListener('keydown', e => {
   if (!view.game || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+  if (view.line) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { stopAutoplay(); lineStep(e.key === 'ArrowLeft' ? -1 : 1); e.preventDefault(); }
+    if (e.key === 'Escape') exitLine(true);
+    if (/^(ArrowLeft|ArrowRight|Escape)$/.test(e.key)) return;
+  }
   if (e.key === 'ArrowLeft') { goto(view.ply - 1); e.preventDefault(); }
   if (e.key === 'ArrowRight') { goto(view.ply + 1); e.preventDefault(); }
   if (e.key === 'Home') goto(0);
